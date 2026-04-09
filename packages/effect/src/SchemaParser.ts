@@ -436,18 +436,26 @@ const recur = memoize(
     let parser: Parser
     const parseOptionsOverride = InternalAnnotations.resolve(ast)?.["parseOptions"] as AST.ParseOptions | undefined
     if (!ast.context && !ast.encoding && !ast.checks) {
+      if (parseOptionsOverride) {
+        return (ou, _options) => {
+          parser ??= ast.getParser(recur)
+          return parser(ou, parseOptionsOverride)
+        }
+      }
       return (ou, options) => {
         parser ??= ast.getParser(recur)
-        return parser(ou, parseOptionsOverride ?? options)
+        return parser(ou, options)
       }
     }
     const isStructural = AST.isArrays(ast) || AST.isObjects(ast) ||
       (AST.isDeclaration(ast) && ast.typeParameters.length > 0)
+    const hasEncoding = !!ast.encoding
+    const hasChecks = !!ast.checks
     return (ou, options) => {
       options = parseOptionsOverride ?? options
-      const encoding = ast.encoding
       let srou: Effect.Effect<Option.Option<unknown>, Issue.Issue, unknown> | undefined
-      if (encoding) {
+      if (hasEncoding) {
+        const encoding = ast.encoding!
         const links = encoding
         const len = links.length
         for (let i = len - 1; i >= 0; i--) {
@@ -468,8 +476,8 @@ const recur = memoize(
       parser ??= ast.getParser(recur)
       let sroa = srou ? Effect.flatMapEager(srou, (ou) => parser(ou, options)) : parser(ou, options)
 
-      if (ast.checks && !options?.disableChecks) {
-        const checks = ast.checks
+      if (hasChecks && !options?.disableChecks) {
+        const checks = ast.checks!
         if (options?.errors === "all" && isStructural && Option.isSome(ou)) {
           sroa = Effect.catchEager(sroa, (issue) => {
             const issues: Array<Issue.Issue> = []
