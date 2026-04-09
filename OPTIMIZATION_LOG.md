@@ -1,0 +1,74 @@
+# Effect Internals Optimization Log
+
+## Focus Areas
+- Effect pipeline engine (internal/core.ts, internal/effect.ts)
+- Common helpers: flatMap, map, gen, fnUntraced, tap, as, asVoid, catchAll
+- Option module
+- Exit module
+
+## Baseline (Pre-Optimization)
+
+| Benchmark | ops/sec (hz) | mean (ms) |
+|-----------|-------------|-----------|
+| **Effect.succeed / Effect.runSync** | | |
+| succeed + runSync | 10,228,751 | 0.0001 |
+| succeed + map + runSync | 380,088 | 0.0026 |
+| succeed + flatMap + runSync | 387,306 | 0.0026 |
+| **Effect.sync** | | |
+| sync + runSync | 422,532 | 0.0024 |
+| sync + map + runSync | 380,280 | 0.0026 |
+| sync + flatMap + runSync | 381,546 | 0.0026 |
+| **Effect pipeline chains** | | |
+| chain of 10 flatMaps | 253,297 | 0.0039 |
+| chain of 10 maps | 241,421 | 0.0041 |
+| chain of 100 flatMaps | 57,668 | 0.0173 |
+| chain of 100 maps | 52,813 | 0.0189 |
+| **Effect.gen** | | |
+| gen with 1 yield | 245,513 | 0.0041 |
+| gen with 5 yields | 203,723 | 0.0049 |
+| gen with 10 yields | 185,432 | 0.0054 |
+| **Effect.fnUntraced** | | |
+| fnUntraced call | 351,324 | 0.0028 |
+| fnUntraced with 5 yields | 294,662 | 0.0034 |
+| **Effect.tap** | | |
+| tap | 337,413 | 0.0030 |
+| **Effect.as / asVoid** | | |
+| as | 379,224 | 0.0026 |
+| asVoid | 383,889 | 0.0026 |
+| **Option** | | |
+| Option.some | 13,893,558 | 0.0001 |
+| Option.none | 11,851,394 | 0.0001 |
+| Option.isSome | 12,209,784 | 0.0001 |
+| Option.isNone | 10,447,500 | 0.0001 |
+| Option.map (Some) | 11,939,768 | 0.0001 |
+| Option.flatMap (Some) | 10,618,272 | 0.0001 |
+| Option.getOrElse (Some) | 12,091,125 | 0.0001 |
+| Option.getOrElse (None) | 10,281,790 | 0.0001 |
+| pipe: some → map → flatMap → getOrElse | 4,738,582 | 0.0002 |
+| **Exit** | | |
+| Exit.succeed | 13,778,011 | 0.0001 |
+| Exit.fail | 3,473,741 | 0.0003 |
+| Exit.isSuccess (success) | 11,636,561 | 0.0001 |
+| Exit.isSuccess (failure) | 3,180,438 | 0.0003 |
+
+## Key Observations
+1. `succeed + runSync` is ~27x faster than `succeed + map + runSync` — massive overhead when combining operations
+2. `map` is slightly slower than `flatMap` because it wraps via `flatMap(self, (a) => succeed(f(a)))` creating an extra allocation
+3. `gen with 1 yield` is ~40% slower than plain `fnUntraced call` due to generator overhead
+4. The gap between `chain of 10 maps` and `chain of 100 maps` scales linearly (~5x for 10x work), which is good
+5. Option operations are very fast (10M+ ops/sec) — limited optimization potential
+
+---
+
+## Optimization Rounds
+
+### Round 1: Add dedicated `map` primitive (avoid flatMap + succeed double allocation)
+
+**Hypothesis:** Currently `map` is implemented as `flatMap(self, (a) => succeed(f(a)))`. This creates:
+1. An OnSuccess primitive (from flatMap)
+2. A closure `(a) => succeed(f(a))`
+3. An Exit.Success primitive (from succeed)
+
+A dedicated map primitive would avoid the intermediate succeed allocation.
+
+**Status:** In progress...
