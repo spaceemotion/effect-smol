@@ -99,3 +99,19 @@ Falls back to generator for complex cases (errors="all", onExcessProperty="prese
 | **Union(A|B) match B good** | 936K | 1,128K | **+20.5%** |
 
 Tests: 447 Schema passed.
+
+### Round 5: Fast-path Arrays parser (avoid generator for simple Array(T))
+
+**Changes:**
+Created specialized non-generator parser for simple `Array(T)` schemas (no tuple elements, single rest type). Pre-allocates output array with `new Array(len)`.
+
+**Result: ✅ SUCCESS (MAJOR)**
+
+| Benchmark | Round 4 | Round 5 | Change |
+|-----------|---------|---------|--------|
+| **Array(String) 2 items good** | 2,086K | 3,104K | **+48.8%** |
+| **Array(String) 10 items good** | 897K | 1,032K | **+15.0%** |
+| **Array(String) bad** | 487K | 571K | **+17.2%** |
+| Struct({name,age,active}) good | 1,575K | 1,687K | +7.1% |
+
+Tests: 1155 passed.

@@ -1375,7 +1375,7 @@ export class Arrays extends Base {
     const elements = ast.elements.map((ast) => ({ ast, parser: recur(ast) }))
     const rest = ast.rest.map((ast) => ({ ast, parser: recur(ast) }))
     const elementLen = elements.length
-    return Effect.fnUntracedEager(function*(oinput, options) {
+    const generatorParser: Parser.Parser = Effect.fnUntracedEager(function*(oinput, options) {
       if (oinput._tag === "None") {
         return oinput
       }
@@ -1513,6 +1513,45 @@ export class Arrays extends Base {
       }
       return Option.some(output)
     })
+    // Fast path: simple Array(T) with no tuple elements and single rest type
+    if (elementLen === 0 && rest.length === 1) {
+      const headParser = rest[0].parser
+      const headAnnotations = rest[0].ast.context?.annotations
+      return (oinput, options) => {
+        if (oinput._tag === "None") return Effect.succeedNone as any
+        const input = oinput.value
+        if (!Array.isArray(input)) {
+          return Effect.fail(new Issue.InvalidType(ast, oinput))
+        }
+        if (options.errors === "all") {
+          return generatorParser(oinput, options)
+        }
+        const len = input.length
+        const output: Array<unknown> = new Array(len)
+        for (let i = 0; i < len; i++) {
+          const eff = headParser(Option.some(input[i]), options)
+          if (!effectIsExit(eff)) {
+            return generatorParser(oinput, options)
+          }
+          const exit = eff as Exit.Exit<Option.Option<unknown>, Issue.Issue>
+          if (exit._tag === "Failure") {
+            const issueRest = Cause.findError(exit.cause)
+            if (Result.isFailure(issueRest)) {
+              return exit as any
+            }
+            const issue = new Issue.Pointer([i], issueRest.success)
+            return Effect.fail(new Issue.Composite(ast, oinput, [issue]))
+          } else if (exit.value._tag === "Some") {
+            output[i] = exit.value.value
+          } else {
+            const issue = new Issue.Pointer([i], new Issue.MissingKey(headAnnotations))
+            return Effect.fail(new Issue.Composite(ast, oinput, [issue]))
+          }
+        }
+        return Effect.succeed(Option.some(output))
+      }
+    }
+    return generatorParser
   }
   /** @internal */
   recur(recur: (ast: AST) => AST) {
