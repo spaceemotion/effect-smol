@@ -6,6 +6,7 @@ import * as Cause from "./Cause.ts"
 import * as Effect from "./Effect.ts"
 import * as Exit from "./Exit.ts"
 import { identity, memoize } from "./Function.ts"
+import { effectIsExit } from "./internal/effect.ts"
 import * as InternalAnnotations from "./internal/schema/annotations.ts"
 import * as Option from "./Option.ts"
 import * as Predicate from "./Predicate.ts"
@@ -351,13 +352,29 @@ export const encodeSync: <S extends Schema.Encoder<unknown>>(
 /** @internal */
 export function run<T, R>(ast: AST.AST) {
   const parser = recur(ast)
-  return (input: unknown, options?: AST.ParseOptions): Effect.Effect<T, Issue.Issue, R> =>
-    Effect.flatMapEager(parser(Option.some(input), options ?? AST.defaultParseOptions), (oa) => {
+  return (input: unknown, options?: AST.ParseOptions): Effect.Effect<T, Issue.Issue, R> => {
+    const oinput = Option.some(input)
+    const opts = options ?? AST.defaultParseOptions
+    const result = parser(oinput, opts)
+    // Fast path: if parser returned an Exit directly (common for primitives, simple structs)
+    if (effectIsExit(result)) {
+      if (result._tag === "Failure") {
+        return result as any
+      }
+      const oa = result.value as Option.Option<unknown>
+      if (oa._tag === "None") {
+        return Effect.fail(new Issue.InvalidValue(oa)) as any
+      }
+      return Effect.succeed(oa.value as T)
+    }
+    // Slow path: the parser returned a non-Exit effect (needs fiber evaluation)
+    return Effect.flatMapEager(result, (oa) => {
       if (oa._tag === "None") {
         return Effect.fail(new Issue.InvalidValue(oa))
       }
       return Effect.succeed(oa.value as T)
-    })
+    }) as any
+  }
 }
 
 function asPromise<T, E>(
@@ -369,7 +386,12 @@ function asPromise<T, E>(
 function asExit<T, E, R>(
   parser: (input: E, options?: AST.ParseOptions) => Effect.Effect<T, Issue.Issue, R>
 ): (input: E, options?: AST.ParseOptions) => Exit.Exit<T, Issue.Issue> {
-  return (input: E, options?: AST.ParseOptions) => Effect.runSyncExit(parser(input, options) as any)
+  return (input: E, options?: AST.ParseOptions) => {
+    const result = parser(input, options) as any
+    // Fast path: parser already returned an Exit (common for sync schemas)
+    if (effectIsExit(result)) return result
+    return Effect.runSyncExit(result)
+  }
 }
 
 /** @internal */
@@ -417,19 +439,28 @@ export interface Parser {
 const recur = memoize(
   (ast: AST.AST): Parser => {
     let parser: Parser
+    const parseOptionsOverride = InternalAnnotations.resolve(ast)?.["parseOptions"] as AST.ParseOptions | undefined
     if (!ast.context && !ast.encoding && !ast.checks) {
+      if (parseOptionsOverride) {
+        return (ou, _options) => {
+          parser ??= ast.getParser(recur)
+          return parser(ou, parseOptionsOverride)
+        }
+      }
       return (ou, options) => {
         parser ??= ast.getParser(recur)
-        return parser(ou, InternalAnnotations.resolve(ast)?.["parseOptions"] ?? options)
+        return parser(ou, options)
       }
     }
     const isStructural = AST.isArrays(ast) || AST.isObjects(ast) ||
       (AST.isDeclaration(ast) && ast.typeParameters.length > 0)
+    const hasEncoding = !!ast.encoding
+    const hasChecks = !!ast.checks
     return (ou, options) => {
-      options = InternalAnnotations.resolve(ast)?.["parseOptions"] ?? options
-      const encoding = ast.encoding
+      options = parseOptionsOverride ?? options
       let srou: Effect.Effect<Option.Option<unknown>, Issue.Issue, unknown> | undefined
-      if (encoding) {
+      if (hasEncoding) {
+        const encoding = ast.encoding!
         const links = encoding
         const len = links.length
         for (let i = len - 1; i >= 0; i--) {
@@ -450,8 +481,8 @@ const recur = memoize(
       parser ??= ast.getParser(recur)
       let sroa = srou ? Effect.flatMapEager(srou, (ou) => parser(ou, options)) : parser(ou, options)
 
-      if (ast.checks && !options?.disableChecks) {
-        const checks = ast.checks
+      if (hasChecks && !options?.disableChecks) {
+        const checks = ast.checks!
         if (options?.errors === "all" && isStructural && Option.isSome(ou)) {
           sroa = Effect.catchEager(sroa, (issue) => {
             const issues: Array<Issue.Issue> = []
@@ -470,19 +501,42 @@ const recur = memoize(
             return Effect.fail(out)
           })
         }
-        sroa = Effect.flatMapEager(sroa, (oa) => {
-          if (Option.isSome(oa)) {
-            const value = oa.value
-            const issues: Array<Issue.Issue> = []
-
-            AST.collectIssues(checks, value, issues, ast, options)
-
-            if (Arr.isArrayNonEmpty(issues)) {
-              return Effect.fail(new Issue.Composite(ast, oa, issues))
+        // Inline Exit check to avoid flatMapEager closure allocation
+        if (effectIsExit(sroa)) {
+          if (sroa._tag === "Success") {
+            const oa = sroa.value as Option.Option<unknown>
+            if (Option.isSome(oa)) {
+              const value = oa.value
+              const firstIssue = AST.findFirstIssue(checks, value, ast, options)
+              if (firstIssue !== undefined) {
+                if (options?.errors === "all") {
+                  const issues: Array<Issue.Issue> = []
+                  AST.collectIssues(checks, value, issues, ast, options)
+                  sroa = Effect.fail(new Issue.Composite(ast, oa, issues as Arr.NonEmptyArray<Issue.Issue>))
+                } else {
+                  sroa = Effect.fail(new Issue.Composite(ast, oa, [firstIssue]))
+                }
+              }
             }
           }
-          return Effect.succeed(oa)
-        })
+          // else: Failure exits pass through unchanged
+        } else {
+          sroa = Effect.flatMapEager(sroa, (oa) => {
+            if (Option.isSome(oa)) {
+              const value = oa.value
+              const firstIssue = AST.findFirstIssue(checks, value, ast, options)
+              if (firstIssue !== undefined) {
+                if (options?.errors === "all") {
+                  const issues: Array<Issue.Issue> = []
+                  AST.collectIssues(checks, value, issues, ast, options)
+                  return Effect.fail(new Issue.Composite(ast, oa, issues as Arr.NonEmptyArray<Issue.Issue>))
+                }
+                return Effect.fail(new Issue.Composite(ast, oa, [firstIssue]))
+              }
+            }
+            return Effect.succeed(oa)
+          })
+        }
       }
 
       return sroa

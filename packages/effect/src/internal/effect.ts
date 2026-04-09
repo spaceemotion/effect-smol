@@ -617,20 +617,21 @@ export class FiberImpl<A = any, E = any> implements Fiber.Fiber<A, E> {
     let current: Primitive | Yield = effect
     this.currentOpCount = 0
     const currentLoop = ++this.currentLoopCount
+    const tracerContext = this.currentTracerContext
     try {
       while (true) {
         this.currentOpCount++
         if (
           !yielding &&
           !this.currentPreventYield &&
-          this.currentScheduler.shouldYield(this as any)
+          this.currentOpCount >= this.maxOpsBeforeYield
         ) {
           yielding = true
           const prev = current
           current = flatMap(yieldNow, () => prev as any) as any
         }
-        current = this.currentTracerContext
-          ? this.currentTracerContext(current as any, this)
+        current = tracerContext
+          ? tracerContext(current as any, this)
           : (current as any)[evaluate](this)
         if (currentLoop !== this.currentLoopCount) {
           // another effect has taken over the loop,
@@ -1306,10 +1307,7 @@ export const as: {
   <A, E, R, B>(
     self: Effect.Effect<A, E, R>,
     value: B
-  ): Effect.Effect<B, E, R> => {
-    const b = succeed(value)
-    return flatMap(self, (_) => b)
-  }
+  ): Effect.Effect<B, E, R> => map(self, (_) => value)
 )
 
 /** @internal */
@@ -1373,13 +1371,16 @@ export const tap: {
     self: Effect.Effect<A, E, R>,
     f: ((a: A) => Effect.Effect<B, E2, R2>) | Effect.Effect<B, E2, R2>
   ): Effect.Effect<A, E | E2, R | R2> =>
-    flatMap(self, (a) => as(isEffect(f) ? f : internalCall(() => (f as (a: A) => Effect.Effect<B, E2, R2>)(a)), a))
+    flatMap(self, (a) =>
+      isEffect(f)
+        ? map(f, (_) => a)
+        : map(internalCall(() => (f as (a: A) => Effect.Effect<B, E2, R2>)(a)), (_) => a))
 )
 
 /** @internal */
 export const asVoid = <A, E, R>(
   self: Effect.Effect<A, E, R>
-): Effect.Effect<void, E, R> => flatMap(self, (_) => exitVoid)
+): Effect.Effect<void, E, R> => map(self, constVoid)
 
 /** @internal */
 export const sandbox = <A, E, R>(
@@ -1589,7 +1590,7 @@ export const flatMap: {
   ): Effect.Effect<B, E | E2, R | R2> => {
     const onSuccess = Object.create(OnSuccessProto)
     onSuccess[args] = self
-    onSuccess[contA] = f.length !== 1 ? (a: A) => f(a) : f
+    onSuccess[contA] = f
     return onSuccess
   }
 )
@@ -1682,8 +1683,25 @@ export const map: {
   <A, E, R, B>(
     self: Effect.Effect<A, E, R>,
     f: (a: A) => B
-  ): Effect.Effect<B, E, R> => flatMap(self, (a) => succeed(internalCall(() => f(a))))
+  ): Effect.Effect<B, E, R> => {
+    const onMap = Object.create(OnMapProto)
+    onMap[args] = self
+    onMap._f = f
+    return onMap
+  }
 )
+const OnMapProto = makePrimitiveProto({
+  op: "OnMap",
+  [evaluate](this: any, fiber: FiberImpl): Primitive {
+    fiber._stack.push(this)
+    return this[args]
+  },
+  [contA](this: any, value: any, fiber: FiberImpl): Primitive | Yield {
+    const mapped = internalCall(() => this._f(value))
+    const cont = fiber.getCont(contA)
+    return cont ? cont[contA](mapped, fiber) : fiber.yieldWith(exitSucceed(mapped))
+  }
+})
 
 /** @internal */
 export const mapEager: {
@@ -3308,10 +3326,8 @@ export const matchCauseEffect: {
   ): Effect.Effect<A2 | A3, E2 | E3, R2 | R3 | R> => {
     const primitive = Object.create(OnSuccessAndFailureProto)
     primitive[args] = self
-    primitive[contA] = options.onSuccess.length !== 1 ? (a: A) => options.onSuccess(a) : options.onSuccess
-    primitive[contE] = options.onFailure.length !== 1
-      ? (cause: Cause.Cause<E>) => options.onFailure(cause)
-      : options.onFailure
+    primitive[contA] = options.onSuccess
+    primitive[contE] = options.onFailure
     return primitive
   }
 )
@@ -5128,13 +5144,14 @@ export const runPromise: <A, E>(
 
 /** @internal */
 export const runSyncExitWith = <R>(context: Context.Context<R>) => {
-  const runFork = runForkWith(context)
+  const syncScheduler = new Scheduler.MixedScheduler("sync")
+  const syncContext = Context.add(context, Scheduler.Scheduler, syncScheduler)
   return <A, E>(effect: Effect.Effect<A, E, R>): Exit.Exit<A, E> => {
     if (effectIsExit(effect)) return effect
-    const scheduler = new Scheduler.MixedScheduler("sync")
-    const fiber = runFork(effect, { scheduler })
+    const fiber = new FiberImpl<A, E>(syncContext)
+    fiber.evaluate(effect as any)
     fiber.currentDispatcher?.flush()
-    return (fiber as FiberImpl<A, E>)._exit ?? exitDie(new AsyncFiberError(fiber))
+    return fiber._exit ?? exitDie(new AsyncFiberError(fiber))
   }
 }
 

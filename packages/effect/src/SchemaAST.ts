@@ -1375,7 +1375,7 @@ export class Arrays extends Base {
     const elements = ast.elements.map((ast) => ({ ast, parser: recur(ast) }))
     const rest = ast.rest.map((ast) => ({ ast, parser: recur(ast) }))
     const elementLen = elements.length
-    return Effect.fnUntracedEager(function*(oinput, options) {
+    const generatorParser: Parser.Parser = Effect.fnUntracedEager(function*(oinput, options) {
       if (oinput._tag === "None") {
         return oinput
       }
@@ -1513,6 +1513,45 @@ export class Arrays extends Base {
       }
       return Option.some(output)
     })
+    // Fast path: simple Array(T) with no tuple elements and single rest type
+    if (elementLen === 0 && rest.length === 1) {
+      const headParser = rest[0].parser
+      const headAnnotations = rest[0].ast.context?.annotations
+      return (oinput, options) => {
+        if (oinput._tag === "None") return Effect.succeedNone as any
+        const input = oinput.value
+        if (!Array.isArray(input)) {
+          return Effect.fail(new Issue.InvalidType(ast, oinput))
+        }
+        if (options.errors === "all") {
+          return generatorParser(oinput, options)
+        }
+        const len = input.length
+        const output: Array<unknown> = new Array(len)
+        for (let i = 0; i < len; i++) {
+          const eff = headParser(Option.some(input[i]), options)
+          if (!effectIsExit(eff)) {
+            return generatorParser(oinput, options)
+          }
+          const exit = eff as Exit.Exit<Option.Option<unknown>, Issue.Issue>
+          if (exit._tag === "Failure") {
+            const issueRest = Cause.findError(exit.cause)
+            if (Result.isFailure(issueRest)) {
+              return exit as any
+            }
+            const issue = new Issue.Pointer([i], issueRest.success)
+            return Effect.fail(new Issue.Composite(ast, oinput, [issue]))
+          } else if (exit.value._tag === "Some") {
+            output[i] = exit.value.value
+          } else {
+            const issue = new Issue.Pointer([i], new Issue.MissingKey(headAnnotations))
+            return Effect.fail(new Issue.Composite(ast, oinput, [issue]))
+          }
+        }
+        return Effect.succeed(Option.some(output))
+      }
+    }
+    return generatorParser
   }
   /** @internal */
   recur(recur: (ast: AST) => AST) {
@@ -1743,7 +1782,8 @@ export class Objects extends Base {
     if (ast.propertySignatures.length === 0 && ast.indexSignatures.length === 0) {
       return fromRefinement(ast, Predicate.isNotNullish)
     }
-    return Effect.fnUntracedEager(function*(oinput, options) {
+    // Create generator parser (used for complex cases and as fallback)
+    const generatorParser: Parser = Effect.fnUntracedEager(function*(oinput, options) {
       if (oinput._tag === "None") {
         return oinput
       }
@@ -1909,6 +1949,73 @@ export class Objects extends Base {
       }
       return Option.some(out)
     })
+    // fast path: simple struct with no index signatures  
+    // Avoids generator overhead for the common case where all property parsers return Exits
+    if (indexCount === 0) {
+      const hasOptionalProps = properties.some((p) => isOptional(p.type))
+      return (oinput, options) => {
+        if (oinput._tag === "None") return Effect.succeedNone as any
+        const input = oinput.value as Record<PropertyKey, unknown>
+        if (!(typeof input === "object" && input !== null && !Array.isArray(input))) {
+          return Effect.fail(new Issue.InvalidType(ast, oinput))
+        }
+        const onExcessPropertyError = options.onExcessProperty === "error"
+        const onExcessPropertyPreserve = options.onExcessProperty === "preserve"
+        // Fall back to generator for preserve mode or errors=all 
+        if (onExcessPropertyPreserve || options.errors === "all") {
+          return generatorParser(oinput, options)
+        }
+        // Check excess properties (error mode)
+        if (onExcessPropertyError) {
+          const inputKeys = Reflect.ownKeys(input)
+          for (let i = 0; i < inputKeys.length; i++) {
+            const key = inputKeys[i]
+            if (!expectedKeysSet.has(key)) {
+              const issue = new Issue.Pointer([key], new Issue.UnexpectedKey(ast, input[key]))
+              return Effect.fail(new Issue.Composite(ast, oinput, [issue]))
+            }
+          }
+        }
+        const out: Record<PropertyKey, unknown> = {}
+        for (let i = 0; i < propertyCount; i++) {
+          const p = properties[i]
+          const hasKey = Object.hasOwn(input, p.name)
+          const value: Option.Option<unknown> = hasKey ? Option.some(input[p.name]) : Option.none()
+          const eff = p.parser(value, options)
+          if (!effectIsExit(eff)) {
+            // Non-exit effect: fall back to generator path
+            return generatorParser(oinput, options)
+          }
+          const exit = eff as Exit.Exit<Option.Option<unknown>, Issue.Issue>
+          if (exit._tag === "Failure") {
+            const issueProp = Cause.findError(exit.cause)
+            if (Result.isFailure(issueProp)) {
+              return exit as any
+            }
+            const issue = new Issue.Pointer([p.name], issueProp.success)
+            return Effect.fail(new Issue.Composite(ast, oinput, [issue]))
+          }
+          if (exit.value._tag === "Some") {
+            internalRecord.set(out, p.name, exit.value.value)
+          } else if (!hasOptionalProps || !isOptional(p.type)) {
+            const issue = new Issue.Pointer([p.name], new Issue.MissingKey(p.type.context?.annotations))
+            return Effect.fail(new Issue.Composite(ast, oinput, [issue]))
+          }
+        }
+        if (options.propertyOrder === "original") {
+          const keys = Reflect.ownKeys(input).concat(expectedKeys)
+          const preserved: Record<PropertyKey, unknown> = {}
+          for (const key of keys) {
+            if (Object.hasOwn(out, key)) {
+              internalRecord.set(preserved, key, out[key])
+            }
+          }
+          return Effect.succeed(Option.some(preserved))
+        }
+        return Effect.succeed(Option.some(out))
+      }
+    }
+    return generatorParser
   }
   private rebuild(
     recur: (ast: AST) => AST,
@@ -3269,6 +3376,28 @@ export function collectIssues<T>(
       }
     }
   }
+}
+
+/** @internal */
+export function findFirstIssue<T>(
+  checks: ReadonlyArray<Check<T>>,
+  value: T,
+  ast: AST,
+  options: ParseOptions
+): Issue.Issue | undefined {
+  for (let i = 0; i < checks.length; i++) {
+    const check = checks[i]
+    if (check._tag === "FilterGroup") {
+      const issue = findFirstIssue(check.checks, value, ast, options)
+      if (issue !== undefined) return issue
+    } else {
+      const issue = check.run(value, ast, options)
+      if (issue) {
+        return new Issue.Filter(value, check, issue)
+      }
+    }
+  }
+  return undefined
 }
 
 /** @internal */
