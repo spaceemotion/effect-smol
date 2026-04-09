@@ -386,7 +386,12 @@ function asPromise<T, E>(
 function asExit<T, E, R>(
   parser: (input: E, options?: AST.ParseOptions) => Effect.Effect<T, Issue.Issue, R>
 ): (input: E, options?: AST.ParseOptions) => Exit.Exit<T, Issue.Issue> {
-  return (input: E, options?: AST.ParseOptions) => Effect.runSyncExit(parser(input, options) as any)
+  return (input: E, options?: AST.ParseOptions) => {
+    const result = parser(input, options) as any
+    // Fast path: parser already returned an Exit (common for sync schemas)
+    if (effectIsExit(result)) return result
+    return Effect.runSyncExit(result)
+  }
 }
 
 /** @internal */
