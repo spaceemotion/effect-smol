@@ -184,3 +184,61 @@ Tests: 779 passed.
 | as | 379,224 | 427,860 | **+12.8%** |
 
 Tests: 779 passed.
+
+---
+
+### Round 7 (REVERTED): Custom Gen primitive to avoid suspend wrapper
+
+**Hypothesis:** `gen` creates a `suspend` + `fromIteratorUnsafe` — two primitives. A custom Gen primitive could combine them.
+
+**Result: ❌ REVERTED — test failures in Stream**
+
+The `suspend` wrapper is essential for re-evaluability (retry, fork scenarios). Removing it caused undefined args in forked fibers.
+
+---
+
+## Final Summary
+
+### Total Improvements (Baseline → Final)
+
+| Benchmark | Baseline | Final | Improvement |
+|-----------|----------|-------|-------------|
+| succeed + map + runSync | 380K | 451K | **+18.7%** |
+| chain of 10 maps | 241K | 283K | **+17.4%** |
+| chain of 100 maps | 53K | 64K | **+20.8%** |
+| succeed + flatMap + runSync | 387K | 446K | **+15.2%** |
+| sync + runSync | 423K | 479K | **+13.3%** |
+| sync + map + runSync | 380K | 431K | **+13.4%** |
+| as | 379K | 421K | **+11.1%** |
+| succeed + runSync | 10,229K | 11,385K | **+11.3%** |
+| tap | 337K | 370K | **+9.8%** |
+| chain of 10 flatMaps | 253K | 278K | **+9.9%** |
+| fnUntraced call | 351K | 380K | **+8.3%** |
+| asVoid | 384K | 415K | **+8.1%** |
+| chain of 100 flatMaps | 58K | 62K | **+7.7%** |
+| gen with 5 yields | 204K | 213K | **+4.5%** |
+| gen with 10 yields | 185K | 192K | **+3.8%** |
+| fnUntraced with 5 yields | 295K | 306K | **+3.7%** |
+| gen with 1 yield | 246K | 252K | **+2.6%** |
+
+### Key Changes (all internal, no public API changes)
+
+1. **Dedicated `map` primitive (OnMapProto):** Avoids intermediate `flatMap + succeed` allocation for map operations. Directly applies the mapping function and calls the next continuation inline.
+
+2. **`as`/`asVoid`/`tap` use optimized map:** Changed from `flatMap + succeed` to use the new `map` primitive, reducing allocations.
+
+3. **Inline `shouldYield` in runLoop:** Replaced virtual method dispatch `this.currentScheduler.shouldYield()` with inline comparison.
+
+4. **Removed `f.length` wrapper in `flatMap`/`matchCauseEffect`:** Eliminated unnecessary closure allocation for the common case.
+
+5. **Pre-computed sync context in `runSyncExitWith`:** Eliminated per-call scheduler allocation, options object creation, and `Context.add` call. The largest single optimization.
+
+### Ceiling Analysis
+
+Remaining overhead is fundamental to the effect system architecture:
+- FiberImpl construction + setContext (8 Map lookups per fiber)
+- Run loop iteration (evaluate + getCont per operation)
+- Stack push/pop for continuations
+- Object.create for each primitive
+
+Further optimization would require architectural changes to the core (e.g., object pooling, specialized sync run loop, or pre-computed fiber templates).
