@@ -69,3 +69,33 @@ Tests: 447 Schema + 228 Effect = 675 passed.
 | NumberFromString good | 2,633K | 2,703K | +2.7% |
 
 Tests: 447 Schema passed.
+
+### Round 3: Pre-compute encoding/checks booleans
+
+Minor optimization to avoid re-reading AST properties on each invocation.
+
+**Result: ✅ SUCCESS (modest)**
+- String.check(isNonEmpty) good: 3,387K → 3,535K (+4.4%)
+
+---
+
+### Round 4: Fast-path Objects parser (avoid generator for simple structs)
+
+**Changes:**
+Created a specialized non-generator parser for Struct schemas with no index signatures. This avoids:
+- Generator object creation overhead
+- `fromIteratorEagerUnsafe` wrapper
+- `iterator.next()` protocol overhead
+Falls back to generator for complex cases (errors="all", onExcessProperty="preserve", non-Exit effects).
+
+**Result: ✅ SUCCESS (MAJOR)**
+
+| Benchmark | Round 3 | Round 4 | Change |
+|-----------|---------|---------|--------|
+| **Struct({a: String}) good** | 2,565K | 3,567K | **+39.1%** |
+| **Struct({a: String}) bad** | 403K | 595K | **+47.6%** |
+| **Struct({name,age,active}) good** | 1,320K | 1,575K | **+19.3%** |
+| **Union(A|B) match A good** | 959K | 1,281K | **+33.6%** |
+| **Union(A|B) match B good** | 936K | 1,128K | **+20.5%** |
+
+Tests: 447 Schema passed.
