@@ -115,3 +115,36 @@ Created specialized non-generator parser for simple `Array(T)` schemas (no tuple
 | Struct({name,age,active}) good | 1,575K | 1,687K | +7.1% |
 
 Tests: 1155 passed.
+
+### Round 6: Optimize asExit + inline checks path
+
+**Changes:**
+1. `asExit`: Check if parser result is already an Exit before calling runSyncExit
+2. Checks path in `recur()`: Inline Exit check to avoid flatMapEager closure allocation
+
+**Result: ✅ SUCCESS**
+
+| Benchmark | Round 5 | Round 7 | Change |
+|-----------|---------|---------|--------|
+| String (good) | 5,911K | 6,324K | +7.0% |
+| String.check(isNonEmpty) good | 3,535K | 3,689K | +4.4% |
+| Union(A|B) match B good | 1,289K | 1,376K | +6.8% |
+
+---
+
+## Cumulative Results (Baseline → Final)
+
+| Benchmark | Baseline | Final | Change |
+|-----------|----------|-------|--------|
+| **Struct({a: String}) good** | 2,274K | 3,588K | **+57.8%** |
+| **Array(String) 2 items good** | 1,813K | 3,121K | **+72.2%** |
+| **Union(A|B) match B good** | 923K | 1,376K | **+49.1%** |
+| **Struct({name,age,active}) good** | 1,213K | 1,700K | **+40.2%** |
+| **Union(A|B) match A good** | 957K | 1,325K | **+38.5%** |
+| **Array(String) 10 items good** | 797K | 1,033K | **+29.6%** |
+| **String.check(isNonEmpty) good** | 2,791K | 3,689K | **+32.2%** |
+| **String (good)** | 5,229K | 6,324K | **+20.9%** |
+| **NumberFromString good** | 2,358K | 2,719K | **+15.3%** |
+| **Number (good)** | 4,967K | 5,550K | **+11.7%** |
+
+Tests: 1155 passed (Schema + Effect + Stream + SchemaAST + SchemaGetter + toCodec).

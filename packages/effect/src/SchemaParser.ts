@@ -501,23 +501,42 @@ const recur = memoize(
             return Effect.fail(out)
           })
         }
-        sroa = Effect.flatMapEager(sroa, (oa) => {
-          if (Option.isSome(oa)) {
-            const value = oa.value
-            // Fast path: check for first issue without allocating an array
-            const firstIssue = AST.findFirstIssue(checks, value, ast, options)
-            if (firstIssue !== undefined) {
-              if (options?.errors === "all") {
-                // Need to collect all issues
-                const issues: Array<Issue.Issue> = []
-                AST.collectIssues(checks, value, issues, ast, options)
-                return Effect.fail(new Issue.Composite(ast, oa, issues as Arr.NonEmptyArray<Issue.Issue>))
+        // Inline Exit check to avoid flatMapEager closure allocation
+        if (effectIsExit(sroa)) {
+          if (sroa._tag === "Success") {
+            const oa = sroa.value as Option.Option<unknown>
+            if (Option.isSome(oa)) {
+              const value = oa.value
+              const firstIssue = AST.findFirstIssue(checks, value, ast, options)
+              if (firstIssue !== undefined) {
+                if (options?.errors === "all") {
+                  const issues: Array<Issue.Issue> = []
+                  AST.collectIssues(checks, value, issues, ast, options)
+                  sroa = Effect.fail(new Issue.Composite(ast, oa, issues as Arr.NonEmptyArray<Issue.Issue>))
+                } else {
+                  sroa = Effect.fail(new Issue.Composite(ast, oa, [firstIssue]))
+                }
               }
-              return Effect.fail(new Issue.Composite(ast, oa, [firstIssue]))
             }
           }
-          return Effect.succeed(oa)
-        })
+          // else: Failure exits pass through unchanged
+        } else {
+          sroa = Effect.flatMapEager(sroa, (oa) => {
+            if (Option.isSome(oa)) {
+              const value = oa.value
+              const firstIssue = AST.findFirstIssue(checks, value, ast, options)
+              if (firstIssue !== undefined) {
+                if (options?.errors === "all") {
+                  const issues: Array<Issue.Issue> = []
+                  AST.collectIssues(checks, value, issues, ast, options)
+                  return Effect.fail(new Issue.Composite(ast, oa, issues as Arr.NonEmptyArray<Issue.Issue>))
+                }
+                return Effect.fail(new Issue.Composite(ast, oa, [firstIssue]))
+              }
+            }
+            return Effect.succeed(oa)
+          })
+        }
       }
 
       return sroa
