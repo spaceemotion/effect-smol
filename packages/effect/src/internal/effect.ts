@@ -5144,13 +5144,14 @@ export const runPromise: <A, E>(
 
 /** @internal */
 export const runSyncExitWith = <R>(context: Context.Context<R>) => {
-  const runFork = runForkWith(context)
+  const syncScheduler = new Scheduler.MixedScheduler("sync")
+  const syncContext = Context.add(context, Scheduler.Scheduler, syncScheduler)
   return <A, E>(effect: Effect.Effect<A, E, R>): Exit.Exit<A, E> => {
     if (effectIsExit(effect)) return effect
-    const scheduler = new Scheduler.MixedScheduler("sync")
-    const fiber = runFork(effect, { scheduler })
+    const fiber = new FiberImpl<A, E>(syncContext)
+    fiber.evaluate(effect as any)
     fiber.currentDispatcher?.flush()
-    return (fiber as FiberImpl<A, E>)._exit ?? exitDie(new AsyncFiberError(fiber))
+    return fiber._exit ?? exitDie(new AsyncFiberError(fiber))
   }
 }
 

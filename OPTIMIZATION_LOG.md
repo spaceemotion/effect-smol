@@ -155,3 +155,32 @@ Tests: 779 passed.
 The closure elimination was especially impactful on chains where many flatMaps are created.
 
 Tests: 779 passed.
+
+---
+
+### Round 6: Optimize `runSyncExitWith` — pre-compute sync context, eliminate allocations
+
+**Hypothesis:** Every `runSync` call created a new `MixedScheduler("sync")`, a `{ scheduler }` options object, and called `Context.add` + `runForkWith`. All of these are redundant for the common case.
+
+**Change:** Pre-compute the sync scheduler and sync context (with scheduler already added) at closure-creation time. Directly create `FiberImpl` in the hot path instead of going through `runForkWith`, avoiding:
+1. `new MixedScheduler("sync")` allocation per call
+2. `{ scheduler }` options object allocation per call
+3. `Context.add()` call per invocation
+4. `options?.signal` and `options?.onFiberStart` checks
+
+**Result: ✅ SUCCESS — massive improvement across the board**
+
+| Benchmark | Baseline | Round 6 | Change |
+|-----------|----------|---------|--------|
+| succeed + map + runSync | 380,088 | 446,758 | **+17.5%** |
+| succeed + flatMap + runSync | 387,306 | 447,065 | **+15.4%** |
+| sync + runSync | 422,532 | 494,649 | **+17.1%** |
+| sync + map + runSync | 380,280 | 438,021 | **+15.2%** |
+| chain of 10 flatMaps | 253,297 | 276,373 | **+9.1%** |
+| chain of 10 maps | 241,421 | 283,958 | **+17.6%** |
+| gen with 1 yield | 245,513 | 264,101 | **+7.6%** |
+| fnUntraced call | 351,324 | 385,373 | **+9.7%** |
+| tap | 337,413 | 381,934 | **+13.2%** |
+| as | 379,224 | 427,860 | **+12.8%** |
+
+Tests: 779 passed.
