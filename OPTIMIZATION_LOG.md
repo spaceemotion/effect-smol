@@ -114,3 +114,25 @@ Tests: 779 passed.
 Adding getCont call inside the contA handler likely made V8's function body too complex for optimal inlining. The extra allocation of one exitSucceed object is cheaper than the optimizer-unfriendly code path.
 
 ---
+
+### Round 4: Inline shouldYield check in runLoop + cache tracerContext
+
+**Hypothesis:** The run loop calls `this.currentScheduler.shouldYield(this)` on every iteration, which is a virtual method dispatch. Also, `this.currentTracerContext` is read from the object on every iteration.
+
+**Change:** 
+- Inlined `shouldYield` as `this.currentOpCount >= this.maxOpsBeforeYield` 
+- Cached `tracerContext` in a local variable before the loop
+
+**Result: ✅ SUCCESS (modest ~1% improvement)**
+
+| Benchmark | Baseline | Round 4 | Change |
+|-----------|----------|---------|--------|
+| sync + runSync | 422,532 | 426,893 | +1.0% |
+| succeed + flatMap + runSync | 387,306 | 390,614 | +0.9% |
+| chain of 100 flatMaps | 57,668 | 58,091 | +0.7% |
+
+Small but consistent improvement across the board from avoiding virtual dispatch.
+
+Tests: 779 passed.
+
+---

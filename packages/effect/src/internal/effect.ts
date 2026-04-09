@@ -617,20 +617,21 @@ export class FiberImpl<A = any, E = any> implements Fiber.Fiber<A, E> {
     let current: Primitive | Yield = effect
     this.currentOpCount = 0
     const currentLoop = ++this.currentLoopCount
+    const tracerContext = this.currentTracerContext
     try {
       while (true) {
         this.currentOpCount++
         if (
           !yielding &&
           !this.currentPreventYield &&
-          this.currentScheduler.shouldYield(this as any)
+          this.currentOpCount >= this.maxOpsBeforeYield
         ) {
           yielding = true
           const prev = current
           current = flatMap(yieldNow, () => prev as any) as any
         }
-        current = this.currentTracerContext
-          ? this.currentTracerContext(current as any, this)
+        current = tracerContext
+          ? tracerContext(current as any, this)
           : (current as any)[evaluate](this)
         if (currentLoop !== this.currentLoopCount) {
           // another effect has taken over the loop,
