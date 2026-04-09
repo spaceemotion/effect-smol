@@ -1306,10 +1306,7 @@ export const as: {
   <A, E, R, B>(
     self: Effect.Effect<A, E, R>,
     value: B
-  ): Effect.Effect<B, E, R> => {
-    const b = succeed(value)
-    return flatMap(self, (_) => b)
-  }
+  ): Effect.Effect<B, E, R> => map(self, (_) => value)
 )
 
 /** @internal */
@@ -1373,13 +1370,16 @@ export const tap: {
     self: Effect.Effect<A, E, R>,
     f: ((a: A) => Effect.Effect<B, E2, R2>) | Effect.Effect<B, E2, R2>
   ): Effect.Effect<A, E | E2, R | R2> =>
-    flatMap(self, (a) => as(isEffect(f) ? f : internalCall(() => (f as (a: A) => Effect.Effect<B, E2, R2>)(a)), a))
+    flatMap(self, (a) =>
+      isEffect(f)
+        ? map(f, (_) => a)
+        : map(internalCall(() => (f as (a: A) => Effect.Effect<B, E2, R2>)(a)), (_) => a))
 )
 
 /** @internal */
 export const asVoid = <A, E, R>(
   self: Effect.Effect<A, E, R>
-): Effect.Effect<void, E, R> => flatMap(self, (_) => exitVoid)
+): Effect.Effect<void, E, R> => map(self, constVoid)
 
 /** @internal */
 export const sandbox = <A, E, R>(

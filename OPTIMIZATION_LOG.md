@@ -87,3 +87,30 @@ Maps are now faster than flatMaps as expected. The chain of 100 maps saw the lar
 Tests: 779 passed (Effect, EffectEager, Exit, Option, Stream, Queue, Fiber, Layer, Scope, Ref, Deferred, Schedule, Cause)
 
 ---
+
+### Round 2: Optimize `as`, `asVoid`, and `tap` to use dedicated map primitive
+
+**Hypothesis:** `as` used `flatMap(self, (_) => succeed(value))` (2 allocations). `asVoid` used `flatMap(self, (_) => exitVoid)`. `tap` used `flatMap(self, (a) => as(f(a), a))` creating 2 flatMaps + succeed.
+
+Changed:
+- `as` → `map(self, (_) => value)` (uses optimized OnMap)
+- `asVoid` → `map(self, constVoid)` (uses optimized OnMap)
+- `tap` → `flatMap(self, (a) => map(f(a), (_) => a))` (uses OnMap instead of as's flatMap)
+
+**Result: ✅ SUCCESS (modest)**
+
+Changes are within noise for `tap` and `as`/`asVoid` but reduce allocations by using the optimized map path. This compounds when chained with other operations.
+
+Tests: 779 passed.
+
+---
+
+### Round 3 (REVERTED): Inline continuation in fromIteratorUnsafe
+
+**Hypothesis:** When generator completes (`state.done`), avoid creating `succeed(state.value)` Exit and directly call the next continuation.
+
+**Result: ❌ REVERTED — regression of -3% to -5%**
+
+Adding getCont call inside the contA handler likely made V8's function body too complex for optimal inlining. The extra allocation of one exitSucceed object is cheaper than the optimizer-unfriendly code path.
+
+---
