@@ -6,6 +6,7 @@ import * as Cause from "./Cause.ts"
 import * as Effect from "./Effect.ts"
 import * as Exit from "./Exit.ts"
 import { identity, memoize } from "./Function.ts"
+import { effectIsExit } from "./internal/effect.ts"
 import * as InternalAnnotations from "./internal/schema/annotations.ts"
 import * as Option from "./Option.ts"
 import * as Predicate from "./Predicate.ts"
@@ -351,13 +352,29 @@ export const encodeSync: <S extends Schema.Encoder<unknown>>(
 /** @internal */
 export function run<T, R>(ast: AST.AST) {
   const parser = recur(ast)
-  return (input: unknown, options?: AST.ParseOptions): Effect.Effect<T, Issue.Issue, R> =>
-    Effect.flatMapEager(parser(Option.some(input), options ?? AST.defaultParseOptions), (oa) => {
+  return (input: unknown, options?: AST.ParseOptions): Effect.Effect<T, Issue.Issue, R> => {
+    const oinput = Option.some(input)
+    const opts = options ?? AST.defaultParseOptions
+    const result = parser(oinput, opts)
+    // Fast path: if parser returned an Exit directly (common for primitives, simple structs)
+    if (effectIsExit(result)) {
+      if (result._tag === "Failure") {
+        return result as any
+      }
+      const oa = result.value as Option.Option<unknown>
+      if (oa._tag === "None") {
+        return Effect.fail(new Issue.InvalidValue(oa)) as any
+      }
+      return Effect.succeed(oa.value as T)
+    }
+    // Slow path: the parser returned a non-Exit effect (needs fiber evaluation)
+    return Effect.flatMapEager(result, (oa) => {
       if (oa._tag === "None") {
         return Effect.fail(new Issue.InvalidValue(oa))
       }
       return Effect.succeed(oa.value as T)
-    })
+    }) as any
+  }
 }
 
 function asPromise<T, E>(
@@ -417,16 +434,17 @@ export interface Parser {
 const recur = memoize(
   (ast: AST.AST): Parser => {
     let parser: Parser
+    const parseOptionsOverride = InternalAnnotations.resolve(ast)?.["parseOptions"] as AST.ParseOptions | undefined
     if (!ast.context && !ast.encoding && !ast.checks) {
       return (ou, options) => {
         parser ??= ast.getParser(recur)
-        return parser(ou, InternalAnnotations.resolve(ast)?.["parseOptions"] ?? options)
+        return parser(ou, parseOptionsOverride ?? options)
       }
     }
     const isStructural = AST.isArrays(ast) || AST.isObjects(ast) ||
       (AST.isDeclaration(ast) && ast.typeParameters.length > 0)
     return (ou, options) => {
-      options = InternalAnnotations.resolve(ast)?.["parseOptions"] ?? options
+      options = parseOptionsOverride ?? options
       const encoding = ast.encoding
       let srou: Effect.Effect<Option.Option<unknown>, Issue.Issue, unknown> | undefined
       if (encoding) {

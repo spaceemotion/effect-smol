@@ -32,3 +32,23 @@
 Tests: All 779 pass (confirmed in previous session).
 
 ---
+
+### Round 1: Inline Exit check in `run()` + pre-compute parseOptions in `recur()`
+
+**Changes:**
+1. In `run()`: Directly check if parser result is an Exit (avoiding `flatMapEager` dual function overhead and extra function call)
+2. In `recur()`: Pre-compute `InternalAnnotations.resolve(ast)?.["parseOptions"]` once at memoization time instead of on every invocation
+
+**Result: ✅ SUCCESS**
+
+| Benchmark | Baseline | Round 1 | Change |
+|-----------|----------|---------|--------|
+| String (good) | 5,229K | 5,878K | **+12.4%** |
+| Number (good) | 4,967K | 5,520K | **+11.1%** |
+| Array(String) 10 items good | 797K | 958K | **+20.2%** |
+| String.check(isNonEmpty) good | 2,791K | 3,263K | **+16.9%** |
+| NumberFromString good | 2,358K | 2,633K | **+11.7%** |
+| Struct({a: String}) good | 2,274K | 2,485K | **+9.3%** |
+| Array(String) 2 items good | 1,813K | 2,004K | **+10.5%** |
+
+Tests: 447 Schema + 228 Effect = 675 passed.
