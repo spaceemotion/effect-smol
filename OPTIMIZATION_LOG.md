@@ -136,3 +136,22 @@ Small but consistent improvement across the board from avoiding virtual dispatch
 Tests: 779 passed.
 
 ---
+
+### Round 5: Remove `f.length !== 1` wrapper in flatMap and matchCauseEffect
+
+**Hypothesis:** `flatMap` wraps user functions with `f.length !== 1 ? (a) => f(a) : f` to prevent extra args from leaking. This check allocates a new closure for every flatMap where `f.length !== 1`. Since JS silently ignores extra arguments, the wrapper is unnecessary.
+
+**Change:** Removed the `f.length` check from `flatMap` and `matchCauseEffect`, directly using the user's function.
+
+**Result: ✅ SUCCESS**
+
+| Benchmark | Baseline | Round 5 | Change |
+|-----------|----------|---------|--------|
+| chain of 10 flatMaps | 253,297 | 263,748 | **+4.1%** |
+| chain of 100 flatMaps | 57,668 | 63,275 | **+9.7%** |
+| succeed + flatMap + runSync | 387,306 | 392,153 | +1.3% |
+| tap | 337,413 | 341,856 | +1.3% |
+
+The closure elimination was especially impactful on chains where many flatMaps are created.
+
+Tests: 779 passed.
