@@ -69,6 +69,21 @@
 2. A closure `(a) => succeed(f(a))`
 3. An Exit.Success primitive (from succeed)
 
-A dedicated map primitive would avoid the intermediate succeed allocation.
+A dedicated map primitive would avoid the intermediate closure and succeed allocation by directly applying the mapping function in its `contA` handler and calling the next continuation inline.
 
-**Status:** In progress...
+**Change:** Created `OnMapProto` with a dedicated `contA` that computes the mapped value and directly invokes the next continuation (or yields with exitSucceed), skipping the intermediate succeed allocation.
+
+**Result: ✅ SUCCESS**
+
+| Benchmark | Baseline | Round 1 | Change |
+|-----------|----------|---------|--------|
+| succeed + map + runSync | 380,088 | 390,161 | **+2.7%** |
+| chain of 10 maps | 241,421 | 263,019 | **+8.9%** |
+| chain of 100 maps | 52,813 | 65,644 | **+24.3%** |
+| sync + map + runSync | 380,280 | 383,624 | +0.9% |
+
+Maps are now faster than flatMaps as expected. The chain of 100 maps saw the largest improvement at +24.3%.
+
+Tests: 779 passed (Effect, EffectEager, Exit, Option, Stream, Queue, Fiber, Layer, Scope, Ref, Deferred, Schedule, Cause)
+
+---

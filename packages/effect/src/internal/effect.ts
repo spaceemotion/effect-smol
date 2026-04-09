@@ -1682,8 +1682,25 @@ export const map: {
   <A, E, R, B>(
     self: Effect.Effect<A, E, R>,
     f: (a: A) => B
-  ): Effect.Effect<B, E, R> => flatMap(self, (a) => succeed(internalCall(() => f(a))))
+  ): Effect.Effect<B, E, R> => {
+    const onMap = Object.create(OnMapProto)
+    onMap[args] = self
+    onMap._f = f
+    return onMap
+  }
 )
+const OnMapProto = makePrimitiveProto({
+  op: "OnMap",
+  [evaluate](this: any, fiber: FiberImpl): Primitive {
+    fiber._stack.push(this)
+    return this[args]
+  },
+  [contA](this: any, value: any, fiber: FiberImpl): Primitive | Yield {
+    const mapped = internalCall(() => this._f(value))
+    const cont = fiber.getCont(contA)
+    return cont ? cont[contA](mapped, fiber) : fiber.yieldWith(exitSucceed(mapped))
+  }
+})
 
 /** @internal */
 export const mapEager: {
