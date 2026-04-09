@@ -52,3 +52,20 @@ Tests: All 779 pass (confirmed in previous session).
 | Array(String) 2 items good | 1,813K | 2,004K | **+10.5%** |
 
 Tests: 447 Schema + 228 Effect = 675 passed.
+
+### Round 2: findFirstIssue for checks path + inline Exit in run()
+
+**Changes:**
+1. Added `findFirstIssue()` to SchemaAST that returns the first issue without allocating an array
+2. Modified checks path in `recur()` to use `findFirstIssue` first, only allocating array when in "all" errors mode and an issue is found
+
+**Result: ✅ SUCCESS (modest improvement)**
+
+| Benchmark | Round 1 | Round 2 | Change |
+|-----------|---------|---------|--------|
+| String (good) | 5,878K | 6,337K | **+7.8%** |
+| Union(A|B) match B good | 950K | 1,045K | **+10.0%** |
+| Struct({a: String}) good | 2,485K | 2,539K | +2.2% |
+| NumberFromString good | 2,633K | 2,703K | +2.7% |
+
+Tests: 447 Schema passed.

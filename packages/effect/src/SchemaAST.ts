@@ -3272,6 +3272,28 @@ export function collectIssues<T>(
 }
 
 /** @internal */
+export function findFirstIssue<T>(
+  checks: ReadonlyArray<Check<T>>,
+  value: T,
+  ast: AST,
+  options: ParseOptions
+): Issue.Issue | undefined {
+  for (let i = 0; i < checks.length; i++) {
+    const check = checks[i]
+    if (check._tag === "FilterGroup") {
+      const issue = findFirstIssue(check.checks, value, ast, options)
+      if (issue !== undefined) return issue
+    } else {
+      const issue = check.run(value, ast, options)
+      if (issue) {
+        return new Issue.Filter(value, check, issue)
+      }
+    }
+  }
+  return undefined
+}
+
+/** @internal */
 export function runChecks<T>(
   checks: readonly [Check<T>, ...Array<Check<T>>],
   s: T

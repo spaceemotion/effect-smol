@@ -491,12 +491,16 @@ const recur = memoize(
         sroa = Effect.flatMapEager(sroa, (oa) => {
           if (Option.isSome(oa)) {
             const value = oa.value
-            const issues: Array<Issue.Issue> = []
-
-            AST.collectIssues(checks, value, issues, ast, options)
-
-            if (Arr.isArrayNonEmpty(issues)) {
-              return Effect.fail(new Issue.Composite(ast, oa, issues))
+            // Fast path: check for first issue without allocating an array
+            const firstIssue = AST.findFirstIssue(checks, value, ast, options)
+            if (firstIssue !== undefined) {
+              if (options?.errors === "all") {
+                // Need to collect all issues
+                const issues: Array<Issue.Issue> = []
+                AST.collectIssues(checks, value, issues, ast, options)
+                return Effect.fail(new Issue.Composite(ast, oa, issues as Arr.NonEmptyArray<Issue.Issue>))
+              }
+              return Effect.fail(new Issue.Composite(ast, oa, [firstIssue]))
             }
           }
           return Effect.succeed(oa)
